@@ -1,0 +1,635 @@
+---
+title: "Stat 183 Proj. v1"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r ,echo=FALSE}
+#install.packages("read_xl")
+#install.packages("tidyverse")
+```
+
+```{r ,echo = FALSE, include=FALSE}
+library(tidyverse)
+library(readxl)
+library(emmeans)
+library(boot) # for cv.glm()
+library(plotROC) # for ROC curve
+library(pROC) # for roc() fn
+library(corrr)
+library(WVPlots)
+library(ggthemes)
+#library(multcomp)
+
+#library(gridExtra) # Load gridExtra
+library(boot) # for cv.glm()
+library(pROC) # for roc() fn
+library(randomForest) # random forest functions
+library(caret) # for confusion matrix
+library(scales) # for confusion matrix
+```
+
+```{r ,echo=FALSE}
+#install.packages("dplyr")
+#install.packages("corrr")
+#install.packages("WVPlots")
+#install.packages("ggthemes")
+```
+
+
+```{r, echo=FALSE}
+# read in xlsx data set
+df_gs <- read_excel("/Users/junhernandez/Documents/A\ -\ Current\ Quarter/Stat\ 183/Project/DM_data/Game\ Sessions.xlsx") 
+df_users <- read_excel("/Users/junhernandez/Documents/A\ -\ Current\ Quarter/Stat\ 183/Project/DM_data/Users.xlsx")
+#View(df)
+```
+
+```{r, echo=FALSE, include=FALSE}
+head(df_gs)
+summary(df_gs)
+str(df_gs)
+```
+
+
+
+
+
+
+# 2.1 Question 2
+For question 2, we want to see if we can model whether or not a player was able to beat the AI score. 
+
+## 2.2 Methodology - Logistic Regression Model
+
+In order to use a logistic regression model, we need to set up a binary or grouped proportion variable as a response variable for the data. Since we are trying to model whether or not a player was able to beat the AI score, we can make a new binary variable from the data to show if the player during the a game session beat the AI score. Here we are using both the Game Sessions and Users data sets, in order to have as many significant predictors as we can. Both data sets required significant cleaning, such as renaming variables, dealing with missing values, and overall preparing the data to work well with modeling.
+
+
+```{r, echo=FALSE,include=FALSE}
+head(df_gs)
+str(df_gs)
+length(unique(df_gs$`User ID`)) # [1] 994 unique users
+```
+
+```{r, echo=FALSE,include=FALSE}
+head(df_users)
+str(df_users)
+```
+
+```{r ,echo=FALSE,include=FALSE}
+# Rename df_gs column names
+colnames(df_gs)
+df_gs <- df_gs %>%
+  rename(User_ScLoss_LowQuality = "Player Score Loss \r\n(Low Quality)", 
+         User_ScLoss_Tardiness = "Player Score Loss (Tardiness)", 
+         AI_ScLoss_LowQuality = "AI Score Loss \r\n(Low Quality)",
+         AI_ScLoss_Tardiness = "AI Score Loss \r\n(Tardiness)", 
+         User_ID = "User ID",
+         Game_Level = "Game Level",
+         Player_Score = "Player Score",
+         AI_Score = "AI Score",
+         User_Strategy_Index = "User Strategy Index",
+         User_Strategy_Description = "User Strategy Description",
+         Facial_Expression_ID = "Facial Expression ID",
+         Start_Time = "Start Time",
+         End_Time = "End Time")
+
+```
+
+```{r,echo=FALSE,include=FALSE}
+colnames(df_gs)
+```
+
+```{r,echo=FALSE,include=FALSE}
+length(unique(df_users$ID))
+#1143 unique users
+```
+
+
+```{r,echo=FALSE,include=FALSE}
+str(df_gs)
+```
+
+
+```{r,echo=FALSE,include=FALSE}
+temp_gs <- df_gs
+
+# join df_users with gs_by_users
+gs_users <- temp_gs %>%
+  left_join(df_users, by = c("User_ID" = "ID"))  #join gets rid of NA rows, so no survey data. Only losing about 160 surveys
+gs_users
+
+length(unique(gs_users$User_ID)) # 994 users
+length(unique(gs_users$ID)) # 9269 game sessions
+```
+## 2.3 Cleaning the data
+After the inital summary analysis of the data sets and renaming the variables, we join both data sets by User ID. The combined data set has a total of 9,269 game sessions played, and a total of 994 unique users. 
+
+
+```{r,echo=FALSE,include=FALSE}
+str(gs_users)
+```
+
+
+**Setting up new datasets for modeling:**
+
+
+```{r,echo=FALSE,include=FALSE}
+# Add new binary column for beat_ai
+gs_users_fixed <- gs_users %>%
+  mutate(beat_ai = (Player_Score > AI_Score)) 
+# turn into 0/1 value
+gs_users_fixed$beat_ai <- as.integer(as.logical(gs_users_fixed$beat_ai))
+#output
+gs_users_fixed
+```
+As stated earlier, we create a new response binary variable named beat_ai. This variable is a 1 if the Player Score is greater than the AI Score, and 0 otherwise. This is the response variable for our modeling. 
+
+
+```{r,echo=FALSE,include=FALSE}
+colnames(gs_users_fixed)
+```
+
+```{r,echo=FALSE,include=FALSE}
+# select vars that would be useful for creating a log model
+gs_users_log <- gs_users_fixed %>% 
+  select("User_ID", "beat_ai", "Game_Level", "User_ScLoss_LowQuality", "User_ScLoss_Tardiness",
+         "AI_ScLoss_LowQuality", "AI_ScLoss_Tardiness","User_Strategy_Index",
+         "Happiness", "Sadness", "Excitement", "Boredom", "Anger", "Surprise", "Start_Time", 
+         "End_Time", "Gender", "Education", "Country", "Age")
+# output
+gs_users_log
+length(unique(gs_users_log$User_ID)) # 994 users
+```
+Next, we pick a subset of the total number of variable that would try to best explain the response. These variables were as follows:
+
+"User_ID", "beat_ai", "Game_Level", "User_ScLoss_LowQuality", "User_ScLoss_Tardiness",
+         "AI_ScLoss_LowQuality", "AI_ScLoss_Tardiness",
+         "Happiness", "Sadness", "Excitement", "Boredom", "Anger", "Surprise",
+         "Gender", "Education", "Country", "Age"
+         
+We had to drop the variables of "User_Strategy_Description" since only a few number of participants described their strategies. We also had to drop "Facial_Expression_ID" and "User_Strategy_Index". Since these variable had over 20 categorical levels, logistic regression would not be able to handle these well as predictors, although they can potentially explain the response. The personality question survey answers were also dropped, since a very few number of participants answered the survey.
+
+
+```{r,echo=FALSE,include=FALSE}
+summary(gs_users_log)
+```
+
+```{r,echo=FALSE,include=FALSE}
+# clean data by filtering out bad values
+gs_users_log <- gs_users_log %>%
+  filter(User_ScLoss_LowQuality <= 1) %>%
+  filter(User_ScLoss_Tardiness <= 1) %>%
+  filter(Age > 0)
+# output
+summary(gs_users_log)
+length(unique(gs_users_log$User_ID)) # 994 users down to 790 users. Lost due to data cleaning
+```
+
+More data cleaning is necessary, as there are a number of nonsensical values due to errors with the data collection. Some of the problems were scores outside the given range in "User_Score_Loss" and "Ages" inputted as 0. After cleaning, we are left with 789 unique users, down from 994, and a total of 8,309 rows of data. 
+
+Finally, we have to turn the character values into factors, or categorical levels. We turn the variables "Education", "Gender", "Country" into factors, as well as releveling the variables to have arbitrary undordered reference levels. 
+
+**Simple EDA:**
+```{r,echo=FALSE,include=TRUE}
+gs_users_log %>% ggplot(mapping = aes(x = Age)) +
+  geom_histogram(bins = 60, fill = "blue", color = "lightblue") + 
+  labs(x = "Age", y = "Count", title = "Distribution of Ages")
+```
+Some initial EDA is shown, to see the distribution of ages and make sure that there are no nonsensical values from before. The values range from 18 to 76, with the average age of 24.
+
+
+
+
+```{r ,echo=FALSE,include=FALSE}
+unique(gs_users_log$Gender)
+unique(gs_users_log$Education)
+unique(gs_users_log$Country)
+length(unique(gs_users_log$Gender == "female")) # only 2, filter out for now
+```
+
+```{r,echo=FALSE,include=FALSE}
+# filter out 2 "female" values
+gs_users_log <- gs_users_log %>%
+  filter(!(Gender == "female"))
+gs_users_log
+unique(gs_users_log$Gender)
+```
+
+```{r,echo=FALSE,include=FALSE}
+str(gs_users_log)
+```
+
+```{r,echo=FALSE,include=FALSE}
+# set vars as factor
+gs_users_log$Gender <- as.factor(gs_users_log$Gender)
+gs_users_log$Education <- as.factor(gs_users_log$Education)
+gs_users_log$Country <- as.factor(gs_users_log$Country)
+#gs_users_log$Game_Level <- as.factor(gs_users_log$Game_Level) # doesn't work since LATER for summarizing and group by user, have to average
+gs_users_log$User_Strategy_Index <- as.factor(gs_users_log$User_Strategy_Index)
+
+# output
+summary(gs_users_log)
+```
+
+```{r,echo=FALSE,include=FALSE}
+str(gs_users_log)
+```
+
+```{r,echo=FALSE,include=FALSE}
+# Check levels
+#levels(gs_users_log$Game_Level)
+levels(gs_users_log$Gender)
+#head(gs_users_log$Gender)
+levels(gs_users_log$Education) # relevel
+levels(gs_users_log$Country)
+
+# check if ordered - NOTE: THIS IS ADVANCED, ORDINAL LOG REG? Introducing order categ. vars may change model statistically. LEAVE UNORDERED
+#is.ordered(gs_users_log$Game_Level)
+
+# Reorder education factor levels
+ord_edu <- c("High School", "Diploma", "Bachelor", "Master", "PhD", "Others")
+gs_users_log$Education <- factor(gs_users_log$Education, levels = ord_edu)
+levels(gs_users_log$Education)
+is.ordered(gs_users_log$Education)
+
+
+
+# Relevel and set reference levels
+#gs_users_log$Game_Level <- relevel(factor(gs_users_log$Game_Level),
+#                                   "1")
+#levels(gs_users_log$Game_Level)
+# Gender
+gs_users_log$Gender <- relevel(factor(gs_users_log$Gender),
+                                   "Male")
+levels(gs_users_log$Gender)
+# Education
+gs_users_log$Education <- relevel(factor(gs_users_log$Education),
+                                   "High School")
+levels(gs_users_log$Education)
+# Country
+gs_users_log$Country <- relevel(factor(gs_users_log$Country),
+                                   "China")
+levels(gs_users_log$Country)
+
+
+
+# might have to take out
+gs_users_log$User_Strategy_Index <- relevel(factor(gs_users_log$User_Strategy_Index),
+                                   "100001")
+levels(gs_users_log$User_Strategy_Index)
+```
+
+
+```{r,echo=FALSE,include=FALSE}
+# filter out times, they might be useful but I have to turn into times
+gs_users_log <- gs_users_log %>%
+  select(-`Start_Time`, -`End_Time`)
+```
+
+```{r,echo=FALSE,include=FALSE}
+colnames(gs_users_log)
+```
+
+
+```{r,echo=FALSE,include=FALSE}
+gs_users_log
+colnames(gs_users_log)
+```
+
+```{r,echo=FALSE,include=FALSE}
+length(unique(gs_users_log$User_ID))
+#789 unique users - does this make sense?
+```
+
+
+```{r ,echo=FALSE,include=TRUE, warning=FALSE, message=FALSE}
+#gs_by_users <- df_gs %>% group_by(`User ID`)  #changed
+gs_by_users <- gs_users_log %>%
+  group_by(User_ID) %>%
+  mutate(count = n()) # 789 users, we can see the number of games played 
+#gs_by_users   # have to ungroup?
+#length(unique(gs_by_users$User_ID))
+
+#summary(gs_by_users$count)
+
+# check dist of count, or # of games played
+# gs_by_users %>% ggplot(mapping = aes(x = count)) +
+#   geom_histogram(bins = 60, fill = "blue", color = "lightblue") + 
+#   labs(x = "Number of games played", y = "Count", title = "Distribution of Games played") +
+#   scale_x_continuous(limits = c(0, 125), breaks = seq(0, 125, by = 5))
+
+# remove outliers, games > 55, 3 players. NOTE: Outliers should not affect log reg when grouping
+gs_by_users %>% ggplot(mapping = aes(x = count)) +
+  geom_histogram(bins = 60, fill = "blue", color = "lightblue") +
+  labs(x = "Number of games played", y = "Count", title = "Distribution of Games played") +
+  scale_x_continuous(limits = c(0, 55), breaks = seq(0, 55, by = 5))
+
+
+# MAIN DATA SET **********************************************************************************************8
+gs_by_users_g3 <- gs_by_users %>%
+  filter(count > 3)
+
+gs_by_users_g10 <- gs_by_users %>%
+  filter(count > 10) # filter for greater > 3 if good percentage of data. This is first model. Make separate variable.
+
+#length(unique(gs_by_users$`User ID`))
+
+
+# 3 outliers
+gs_by_users_g55 <- gs_by_users %>%
+  filter(count > 55) # filter for greater > 3 if good percentage of data. This is first model. Make separate variable.
+
+#length(unique(gs_by_users_g55$User_ID))
+
+
+#summarise_all
+
+# works
+# gs_by_users %>%
+#   summarize(mean_gamelvl = mean(`Game Level`))
+```
+**Data Cleaning Cont.**
+
+Number of games played:
+
+n > 3 :  692 Users - 692 / 789 = 87.7 % of user data kept
+
+n > 5 :  633 Users
+
+n > 10 : 265 Users
+
+n > 15 : 148 Users
+
+n > 20 : 77 Users
+
+n > 25 : 42 Users
+
+n > 30 : 29 Users
+
+Since there are a number of users with only 3 or less games played, in order to have the data be better representative of performance and with less bias, it is justifiable to only include players with 3 or more game session in the main modeling data set. Overall, we keep data on 692 users, which is still 87.7% of the user data kept.
+
+
+```{r,echo=FALSE,include=FALSE}
+# select out User_Strategy_Index
+gs_by_users_g3 <- gs_by_users_g3 %>%
+  select(-"User_Strategy_Index")
+```
+
+```{r,echo=FALSE,include=FALSE}
+gs_by_users_g3
+```
+
+```{r,echo=FALSE,include=FALSE}
+avged_vars <- c("beat_ai", "User_ScLoss_LowQuality", "User_ScLoss_Tardiness", "AI_ScLoss_LowQuality", "AI_ScLoss_Tardiness", "Happiness", "Sadness",
+                "Excitement", "Boredom", "Anger", "Surprise")
+
+# use to check next data - CHECKED OK
+#gs_by_users_g3 %>%
+#  summarize_all(list(avg = mean)) # -beat_ai, -gender, -education, -country. Beat ai is no longer
+
+# prepare final log data set with filter games < 3
+log_gt_3 <- gs_by_users_g3 %>%
+#  summarize_all(list(avg = mean), -"Gender") # -beat_ai, -gender, -education, -country. Beat ai is no longer
+#  summarise_if(is.numeric, list(avg = mean))   # fix this, needs factors *************************************************************************
+#  summarise(Gender = first(Gender), Education = first(Education), Country = first(Country),mean(count, na.rm = TRUE))
+  summarise(beat_ai_avg = mean(beat_ai), 
+            Game_Level_avg = mean(Game_Level),
+            User_ScLoss_LowQuality_avg = mean(User_ScLoss_LowQuality),
+            User_ScLoss_Tardiness_avg = mean(User_ScLoss_Tardiness),
+            AI_ScLoss_LowQuality_avg = mean(AI_ScLoss_LowQuality),
+            AI_ScLoss_Tardiness_avg = mean(AI_ScLoss_Tardiness),
+            Happiness_avg = mean(Happiness),
+            Sadness_avg = mean(Sadness),
+            Excitement_avg = mean(Excitement),
+            Boredom_avg = mean(Boredom),
+            Anger_avg = mean(Anger),
+            Surprise_avg = mean(Surprise),
+            Gender = first(Gender), Education = first(Education), Country = first(Country), Age = first(Age), count = first(count))
+log_gt_3
+
+summary(log_gt_3)
+
+ log_gt_3 %>% ggplot(mapping = aes(x = beat_ai_avg)) +
+   geom_histogram()
+
+length(unique(log_gt_3$User_ID))  # 692 Users
+
+
+
+
+```
+**Group by Users**
+
+We are now ready to aggregate and summarize the data by user, so each row is an average of the players games sessions, and the data is independent. The continous variables were averaged based on number of games played, and the categorical variables were left as is. A new variable is also added, "Count", which is the number of games played by the user. Since the response variable "beat_ai" was originally a binary variable, it is now "beat_ai_avg", which is the proportion of games won over the AI. We will use this variable as the response since logistic regression also works with proportion response variables, with the "Count" variable as a weight for the model. 
+
+
+
+```{r,echo=FALSE}
+log_gt_3 %>% ggplot(mapping = aes(x = beat_ai_avg)) +
+  geom_histogram(bins = 60, fill = "blue", color = "lightblue") + 
+  labs(x = "Beat AI Avg Score", y = "Count", title = "Distribution of Users that Beat AI Averaged out")
+```
+
+```{r,echo=FALSE,include=FALSE}
+temp_log <- log_gt_3 %>%
+  select(-User_ID) %>%
+  drop_na()  # drop 1 NA
+temp_log
+summary(temp_log) 
+
+```
+
+
+## 2.4 Correlation Check
+
+```{r,echo=FALSE,include=TRUE, warning=FALSE, message=FALSE}
+cor_check <- temp_log %>%
+  select(-Gender, -Education, -Country)
+
+# check correlations using corrr
+rs <- correlate(cor_check)
+#rs %>% shave()   
+# %>% View()
+
+rs %>%
+  rplot(shape = 15, colors = c("red", "green")) +
+    theme(axis.text.x = element_text(size = 10, 
+                                   angle = 45,
+                                   hjust = 1,
+                                   vjust = 1)) +
+  labs(title = "Correlation Plot")
+
+# ignores NA, but fixed earlier
+correlationMatrix <- cor(cor_check)
+# print(correlationMatrix)
+highlyCorrelated <- findCorrelation(correlationMatrix, cutoff = .8, names = TRUE)
+print(highlyCorrelated)   # Surprise and AI_ScLoss_Tardiness_avg very high at .8
+```
+
+We can see from the graph and correlation matrix that only a few variables are correlated. Setting a cutoff point at .7, only the variables "AI_ScLoss_Tardiness_avg" and "Surprise" are highly correlated with other variables. From this, we can leave out the variables "AI_ScLoss_Tardiness_avg", but decide to keep "Surprise" since this may provide good information as a predictor in the model.
+
+
+```{r,echo=FALSE,include=FALSE}
+temp_log <- temp_log %>%
+  select(-AI_ScLoss_Tardiness_avg)
+summary(temp_log)
+```
+
+
+
+
+
+## 2.5 Initial Logistic Regression Model
+
+First we split the data into training and validation sets to check for model accuracy, and run the model based on our cleaned data set. 
+```{r ,echo=FALSE,include=FALSE}
+set.seed(183)
+# Split into Train and Validation sets
+# Training Set : Validation Set = 70 : 30 (random)
+train_log <- sample(nrow(temp_log), 0.7*nrow(temp_log), replace = FALSE)
+TrainSet_log <- temp_log[train_log,]
+ValidSet_log <- temp_log[-train_log,]
+TrainSet_log
+ValidSet_log
+```
+
+
+```{r,echo=FALSE,include=TRUE}
+# create log reg model based on all vars
+log_model_beatai <- glm(beat_ai_avg ~ ., data = TrainSet_log,
+                family = binomial(link = "logit"), weights = count)  # have to use weights, aggregate log reg
+summary(log_model_beatai)
+```
+
+**Initial Model**
+
+$logit(\pi_i) = log[\pi_i / (1 - \pi_i)] = \beta_0 + \beta_1x_1 + ... +\beta_{19}x_{19}$
+
+where:
+
+$\pi_i$ = the proportion of games beating the AI by the player i
+
+$\beta_i$ = the regression coefficients for factor $x_i$
+
+with 19 independent variables in the model.
+
+```{r,echo=FALSE,include=FALSE}
+TrainSet_log$pred <- predict(log_model_beatai, newdata = TrainSet_log, type = "response")
+ValidSet_log$pred <- predict(log_model_beatai, newdata = ValidSet_log, ttype = "response")
+```
+
+
+**Initial Model Perfomance**
+```{r, echo=FALSE, include=TRUE}
+# dev test
+1 - pchisq( log_model_beatai$null.deviance - log_model_beatai$deviance, 482 - 462)
+# Wald Test
+anova(log_model_beatai, test = "Chisq")
+# Psuedo R2
+pr2 <- 1 - (log_model_beatai$deviance / log_model_beatai$null.deviance)
+#pr2
+
+```
+
+```{r,echo=FALSE,include=FALSE}
+loglikelihood <- function(y, py) {
+  sum(y * log(py) + (1-y)*log(1 - py))
+}
+
+testy <- as.numeric(ValidSet_log$beat_ai_avg)
+testpred <- predict(log_model_beatai, newdata = ValidSet_log, 
+                    type = "response")
+(pnull_valid <- mean(testy))
+(null_dev_valid <- -2 * loglikelihood(testy, pnull_valid))
+(resid_dev_valid <- -2 * loglikelihood(testy, testpred))
+
+pr2_valid <- 1 - (resid_dev_valid / null_dev_valid)
+pr2_valid
+```
+
+For the training data, we conduct the Deviance test, which has a p-value = 0. We also conduct the Wald test, which confirms the model's significance, meaning it predicts the response variable in the training data at a quality that is unlikely to be pure chance. Finally, we find the psuedo $R^2$ = 0.6387, which means the model explains 63.87% of the deviance. For the validation data, we find the psuedo $R^2$ = 10.99%. Unfortunately, this tells us that we haven't yet identified all the factors that actually predict the response variable.  
+
+
+
+
+
+
+
+## 2.6 Reduced Logistic Regression Model 
+Fitting a second model based on backwards selection, we find the reduced logistic regression model. 
+
+```{r,echo=FALSE,include=FALSE}
+backwards = step(log_model_beatai)
+```
+
+```{r,echo=FALSE,include=TRUE}
+log_model_beatai_red <-glm(beat_ai_avg ~ Game_Level_avg + User_ScLoss_LowQuality_avg + User_ScLoss_Tardiness_avg + 
+    AI_ScLoss_LowQuality_avg + Happiness_avg + count, data = TrainSet_log,
+                family = binomial(link = "logit"), weights = count) 
+summary(log_model_beatai_red)
+```
+
+**Reduced Model:**
+
+$logit(\pi_i) = log[\pi_i / (1 - \pi_i)] = \beta_0 + \beta_1x_1 + ... +\beta_{6}x_{6}$
+
+where:
+
+$\pi_i$ = the proportion of games beating the AI by the player i
+
+$\beta_i$ = the regression coefficients for factor $x_i$
+
+with 6 independent variables in the model.
+
+The most significant predictors for the response were average Game Level difficulty, the average User Score Loss due to Low Quality performance, the averge User Score Loss due to Tardiness in the game, the average Happiness level, and the number of games played.
+
+
+**Reduced Model Performance**
+```{r,echo=FALSE,include=TRUE}
+# dev test
+1 - pchisq(log_model_beatai_red$null.deviance - log_model_beatai_red$deviance, 482 - 476)
+# Wald Test
+anova(log_model_beatai_red, test = "Chisq")
+# Psuedo R2
+pr2_red <- 1 - (log_model_beatai_red$deviance / log_model_beatai_red$null.deviance)
+pr2_red
+
+```
+
+```{r,echo=FALSE,include=FALSE}
+testy2 <- as.numeric(ValidSet_log$beat_ai_avg)
+testpred2 <- predict(log_model_beatai_red, newdata = ValidSet_log, 
+                    type = "response")
+(pnull_valid <- mean(testy2))
+(null_dev_valid <- -2 * loglikelihood(testy2, pnull_valid))
+(resid_dev_valid <- -2 * loglikelihood(testy2, testpred2))
+
+pr2_red_valid <- 1 - (resid_dev_valid / null_dev_valid)
+pr2_red_valid
+```
+
+
+Again, for the training data, we conduct the Deviance test and the Wald test, which shows the model is significant. We find the psuedo $R^2$ = 0.6278, which means the model explains 62.78% of the deviance. For the validation data, we find the psuedo $R^2$ = 10.95%. Unfortunately, this model still does not perform well with the validation data, meaning there is only so much that the included predictors can explain in predicting the response variable.  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

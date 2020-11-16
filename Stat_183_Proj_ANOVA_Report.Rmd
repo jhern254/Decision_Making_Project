@@ -1,0 +1,389 @@
+---
+title: "Stat183_Proj_ANOVA"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r, echo=FALSE, include=FALSE}
+library(tidyverse)
+library(readxl)
+library(emmeans)
+library(boot) # for cv.glm()
+library(plotROC) # for ROC curve
+library(pROC) # for roc() fn
+library(corrr)
+#library(WVPlots)
+#library(ggthemes)
+#library(multcomp)
+
+#library(gridExtra) # Load gridExtra
+library(randomForest) # random forest functions
+library(caret) # for confusion matrix
+library(scales) # for confusion matrix
+
+library(ggpubr)
+#library(MASS)
+library(emmeans)
+library(moments)
+#library(bestNormalize)
+library(rcompanion)
+```
+
+```{r, echo=FALSE, include=FALSE}
+#install.packages("moments")
+#install.packages("bestNormalize")
+```
+
+
+```{r, echo=FALSE, include=FALSE}
+# read in xlsx data set
+df_gs <- read_excel("/Users/junhernandez/Documents/A\ -\ Current\ Quarter/Stat\ 183/Project/DM_data/Game\ Sessions.xlsx") 
+df_users <- read_excel("/Users/junhernandez/Documents/A\ -\ Current\ Quarter/Stat\ 183/Project/DM_data/Users.xlsx")
+#View(df)
+```
+
+```{r, echo=FALSE, include=FALSE}
+head(df_gs)
+summary(df_gs)
+str(df_gs)
+```
+
+
+# 1.1 Question 1
+For question 1, we want to see how emotions play a role in a users "Player Score", in particular how Happiness levels and Sadness levels compare. 
+
+## 1.2 Methodology - ANOVA
+We are interested in testing the effects of emotions (in this case, happiness and sadness) on the player score for a game session.
+
+* Dependent variables: Player Score(response)
+* Factors:
+   * Average happiness levels:
+      * Low
+      * Mid
+      * High
+   * Average Sadness levels:
+      * Low
+      * Mid
+      * High
+* Objective: Test both happiness and sadness effects on the Player Score.
+
+**Statistical Model**
+
+Two-Way ANOVA:
+
+$y_{ijk} = \mu + \tau_i + \beta_j + \tau\beta_{ij}+\epsilon_{ijk}$
+
+i - happiness average level(low, mid, high)
+
+j - sadness average level(low, mid, high)
+
+k - player(1,...,721) 
+
+$\epsilon$ ~ $N(0,\sigma^2)$
+
+Where:
+
+$Y_{ijk}:$ The kth measurement corresponding to the ith and jth factors
+
+$\mu:$ the overall mean
+
+$\tau_i:$ the average happiness effect
+
+$\beta_j:$ the average sadness effect
+
+$\tau\beta_{ij}:$ the interaction effect between happiness and sadness
+
+$\epsilon_{ijk}:$ the random error
+
+
+```{r, echo=FALSE, include=FALSE}
+df_gs <- df_gs %>%
+  rename(User_ScLoss_LowQuality = "Player Score Loss \r\n(Low Quality)", 
+         User_ScLoss_Tardiness = "Player Score Loss (Tardiness)", 
+         AI_ScLoss_LowQuality = "AI Score Loss \r\n(Low Quality)",
+         AI_ScLoss_Tardiness = "AI Score Loss \r\n(Tardiness)", 
+         User_ID = "User ID",
+         Game_Level = "Game Level",
+         Player_Score = "Player Score",
+         AI_Score = "AI Score",
+         User_Strategy_Index = "User Strategy Index",
+         User_Strategy_Description = "User Strategy Description",
+         Facial_Expression_ID = "Facial Expression ID",
+         Start_Time = "Start Time",
+         End_Time = "End Time")
+str(df_gs)
+```
+
+
+```{r, echo=FALSE, include=FALSE}
+# select vars that would be useful for creating a log model
+gs_anova <- df_gs %>% 
+  select("User_ID", "Player_Score","Happiness", "Sadness", "Excitement", "Boredom", "Anger", "Surprise") 
+  
+# output
+gs_anova
+length(unique(gs_anova$User_ID)) # 994 users
+```
+
+```{r, echo=FALSE, include=FALSE}
+gs_anova <- gs_anova %>%
+  drop_na()  # drop 2 NA
+```
+
+```{r, echo=FALSE, include=FALSE}
+summary(gs_anova)
+str(gs_anova)
+```
+
+```{r, echo=FALSE, include=FALSE}
+#gs_by_users <- df_gs %>% group_by(`User ID`)  #changed
+gs_anova_users <- gs_anova %>%
+  group_by(User_ID) %>%
+  mutate(count = n()) # 789 users, we can see the number of games played 
+gs_anova_users   # have to ungroup?
+length(unique(gs_anova_users$User_ID))
+```
+
+```{r, echo=FALSE, include=FALSE}
+gs_anova_users_g3 <- gs_anova_users %>%
+  filter(count > 3)
+length(unique(gs_anova_users_g3$User_ID)) # 994 to 840, retain .8451 of data
+```
+
+## 1.3 Cleaning the data
+The dataset we use for the ANOVA is the Game Sessions data, since it has information on the players self reported emotional levels after playing a game. After loading the data, we clean it by handling missing values, and selecting a small subset of the variables we are interested in. Based on analysis done during question 2, it makes sense to partition the data since there are a number of users with only 3 or less games played. In order to have the data be better representative of performance and with less bias, it is justifiable to only include players with 3 or more game session in the main modeling data set. Further analysis is provided in question 2. Overall, we keep data on 721 users after subsetting and cleaning the data. Finally, we average the players performance scores so the data is independent. 
+
+**EDA**
+
+
+
+```{r, echo=FALSE, include=TRUE}
+# grouped by users and summarized from mean
+anova_gt_3 <- gs_anova_users_g3 %>%
+  summarize_all(list(avg = mean))
+# anova_gt_3
+# summary(anova_gt_3)
+
+# anova_gt_3 %>% ggplot(mapping = aes(x = Excitement_avg)) +
+#    geom_histogram()
+# anova_gt_3 %>% ggplot(mapping = aes(x = Boredom_avg)) +
+#    geom_histogram()
+anova_gt_3 %>% ggplot(mapping = aes(x = Happiness_avg)) +
+  geom_histogram(bins = 60, fill = "blue", color = "lightblue") + 
+  labs(x = "Happiness Average", y = "Count", title = "Distribution of Average Happiness Score")
+anova_gt_3 %>% ggplot(mapping = aes(x = Sadness_avg)) +
+  geom_histogram(bins = 60, fill = "blue", color = "lightblue") + 
+  labs(x = "Sadness Average", y = "Count", title = "Distribution of Average Sadness Score")
+# anova_gt_3 %>% ggplot(mapping = aes(x = Anger_avg)) +
+#    geom_histogram()
+# anova_gt_3 %>% ggplot(mapping = aes(x = Surprise_avg)) +
+#    geom_histogram()
+```
+Since we are interested in comparing the average happiness score and the average sadness score for the response "Player Score", we plot the distributions for both variables. For the ANOVA, the data has been grouped into 3 levels based on subjective ratings 1-3 = low, 4-7 = mid, 8-10 = high. This is subjective choice, however makes sense in the context of emotional levels.
+
+
+## 1.4 Correlation Check and Plots
+```{r, echo=FALSE, include=TRUE, warning=FALSE, message=FALSE}
+cor_check <- anova_gt_3 %>%
+  select(-count_avg, -User_ID)
+
+# check correlations using corrr
+rs <- correlate(cor_check) # method = "spearman"
+#rs %>% shave()   
+# %>% View()
+
+rs %>%
+  rplot(shape = 15, colors = c("red", "green")) +
+    theme(axis.text.x = element_text(size = 10, 
+                                   angle = 45,
+                                   hjust = 1,
+                                   vjust = 1)) +
+  labs(title = "Correlation Plot")
+
+# ignores NA, but fixed earlier
+correlationMatrix <- cor(cor_check) # method = "spearman"
+# print(correlationMatrix)
+highlyCorrelated <- findCorrelation(correlationMatrix, cutoff = .7, names = TRUE)
+print(highlyCorrelated)   # Surprise and AI_ScLoss_Tardiness_avg very high at .8
+```
+We chose "Happiness_avg" and "Sadness_avg" since the variables have a low correlation of 0.2597974. Based on the graph and correlation matrix, a number of variables like "Surprise_avg", "Anger_avg", including "Sadness_avg" have high correlation with other variables. We can now pick the final variables we are interested in:
+
+"Player_Score_avg", "Happiness_level", "Sadness_level", and "count_avg", which tells us the number of games a user played. Since the counts are different, this data set is unbalanced. 
+
+**EDA**
+
+
+```{r, echo=FALSE, include=TRUE}
+# happiness vs sadness
+hap_sad <- anova_gt_3 %>%
+  select(User_ID, Player_Score_avg, Happiness_avg, Sadness_avg, count_avg) %>%
+  filter(Player_Score_avg <= 1) %>%
+  filter(Happiness_avg > 0) %>%
+  filter(Sadness_avg > 0)   # filters from 840 to 721
+#hap_sad
+#summary(hap_sad)
+
+hap_sad %>% ggplot(mapping = aes(x = Player_Score_avg)) +
+  geom_histogram(bins = 60, fill = "blue", color = "lightblue") + 
+  labs(x = "Player Score Avg", y = "Count", title = "Distribution of Users that Player Score Averaged out")
+```
+
+
+
+```{r, echo=FALSE, include=FALSE}
+# makde low, mid, high categories factor var based on excitement and boredom dbl levels
+hap_sad_categ <- hap_sad %>%
+    mutate(hap_level=cut(Happiness_avg, breaks=c(-Inf, 4, 7, Inf), labels=c("low","mid","high"))) %>%
+    mutate(sad_level=cut(Sadness_avg, breaks=c(-Inf, 4, 7, Inf), labels=c("low","mid","high")))
+hap_sad_categ
+```
+
+```{r, echo=FALSE, include=FALSE}
+# hyp test dataset with relevent testing vars
+test_anova <- hap_sad_categ %>%
+  select(-User_ID, -Happiness_avg, -Sadness_avg, count_avg)
+test_anova
+```
+
+**Box plot & Interaction plot**
+
+```{r, echo=FALSE, include=TRUE}
+# construct interaction plot and box plot 
+interaction.plot(test_anova$hap_level, test_anova$sad_level, test_anova$Player_Score_avg, ylab = "Player Score Avg",
+        xlab = "Happiness level", col = c("#00AFBB", "#E7B800", "red1"), lwd = 2, trace.label = "Sadness level", main = "Interaction Plot")
+# boxplot(test_anova$Player_Score_avg ~ test_anova$hap_level + test_anova$sad_level, ylab = "Player Score Avg",
+#         xlab = "Happyness level", col = c("#00AFBB", "#E7B800"), lwd = 2, trace.label = "Sadness level")
+```
+
+```{r, echo=FALSE, include=FALSE}
+# construct interaction plot and box plot ussing ggplot
+# ggboxplot(test_anova, x = "hap_level", y = "Player_Score_avg", color = "sad_level",
+#           palette = c("#00AFBB", "#E7B800"))
+
+# ggline(test_anova, x = "hap_level", y = "Player_Score_avg", color = "sad_level",
+#        add = c("mean_se"),
+#        palette = c("#00AFBB", "#E7B800"))
+```
+
+```{r, echo=FALSE, include=TRUE}
+test_anova %>% ggplot(mapping = aes(x = hap_level, y = Player_Score_avg, color = sad_level)) +
+  geom_boxplot() +
+  labs(title = "Box Plot", x = "Happiness level", y = "Player Score Avg", fill = "Sadness level")
+
+# test_anova %>% ggplot(mapping = aes(x = hap_level, y = Player_Score_avg, group = sad_level, color = sad_level)) +
+#   geom_line(linetype = sad_level) +
+#   geom_point()
+```
+From the interaction plot, there may be an interaction between happiness and sadness levels
+
+## 1.5 ANOVA
+We first fit a two-way ANOVA model with interaction on the original scale of the dependent variable.
+
+```{r, echo=FALSE, include=TRUE}
+# Fit a two-way ANOVA model on the original scale of depedent variable
+model1 <- aov(test_anova$Player_Score_avg ~ test_anova$hap_level + test_anova$sad_level + test_anova$hap_level*test_anova$sad_level)
+anova(model1)
+# Use q-q plot and residual plot to check normality and equal variance assumption 
+plot(model1, 1)
+plot(model1, 2)
+```
+
+```{r, echo=FALSE, include=TRUE}
+# Extract the residuals
+aov_residuals <- residuals(object = model1)
+# Run Shapiro-Wilk test
+shapiro.test(x = aov_residuals ) # p-value = 3.389e-16 - low p-value, not normal.
+```
+We can see that in the ANOVA, none of the factors are significant. Further analysis shows there is unequal variances from the residuals vs fitted plot, and the Shapiro-Wilk normality test has a p-value = 3.389e-16, which confirms that the data is not normally distributed. The Interaction plot suggests there is an interaction even though none of the factors are statistically significant. 
+
+```{r, echo=FALSE, include=FALSE}
+# Fit a two-way ANOVA model on the original scale of depedent variable with no interaction
+model2 <- aov(test_anova$Player_Score_avg ~ test_anova$hap_level + test_anova$sad_level)
+anova(model2)
+# Use q-q plot and residual plot to check normality and equal variance assumption 
+plot(model2, 1)
+plot(model2, 2)
+```
+
+```{r, echo=FALSE, include=FALSE}
+# Extract the residuals
+aov_residuals <- residuals(object = model2)
+# Run Shapiro-Wilk test
+shapiro.test(x = aov_residuals ) # p-value < 2.2e-16 - low p-value, not normal.
+```
+
+
+**Transformation**
+
+Box Cox transformation was used and $\lambda$ was deterrmined to be 2.3. Let y* = $y^{2.3}$, we fit a Type III SS ANOVA model since this is an unbalanced design, on the transformed data. 
+
+```{r, echo=FALSE, include=FALSE}
+skewness(test_anova$Player_Score_avg)
+```
+
+
+```{r, echo=FALSE, include=TRUE, warning=FALSE}
+Box <- MASS::boxcox(Player_Score_avg ~ hap_level + sad_level + hap_level*sad_level,
+             data = test_anova,
+             lambda = seq(-6,6,0.1)
+             )
+
+Cox <- data.frame(Box$x, Box$y)
+
+Cox2 <- Cox[with(Cox, order(-Cox$Box.y)),]
+
+Cox2[1,]
+
+lambda = Cox2[1, "Box.x"]
+
+test_anova$Player_Score_avg_box = (test_anova$Player_Score_avg ^ lambda - 1)/lambda   
+
+boxplot(Player_Score_avg_box ~ hap_level + sad_level + hap_level*sad_level,
+        data = test_anova,
+        ylab="Box–Cox-transformed Turbidity",
+        xlab="Location")
+
+```
+
+```{r, echo=FALSE, include=TRUE}
+# lamda = 2.3
+
+# Fit two-way ANOVA model again on the tranformed data
+model.t <- aov(test_anova$Player_Score_avg_box ~ test_anova$hap_level + test_anova$sad_level + test_anova$hap_level*test_anova$sad_level)
+anova(model.t)
+# Use q-q plot and residual plot to check normality and equal variance assumption 
+plot(model.t, 1)
+plot(model.t, 2)
+
+# Extract the residuals
+aov_residuals2 <- residuals(object = model.t)
+# Run Shapiro-Wilk test
+shapiro.test(x = aov_residuals2 )
+```
+
+
+```{r, echo=FALSE, include=FALSE}
+# library(bestNormalize)
+# temp <- lm(Player_Score_avg ~ hap_level + sad_level + hap_level*sad_level, data = test_anova)
+# BNobj <- bestNormalize(temp)
+
+```
+
+```{r, echo=FALSE, include=TRUE}
+# Type III SS ANOVA, unbalanced design
+options(contrasts = c("contr.sum", "contr.poly"))
+drop1(model.t,.~., test="F")
+```
+
+## 1.6 ANOVA Results
+Unfortunately, even after a transformation, the data is still non-normal, and there are unequal variances. Based on this, the final type III ANOVA is inconclusive, and the unequal variances in the data will not hold for non-parametric methods.
+
+
+
+
+
+
+
+
+

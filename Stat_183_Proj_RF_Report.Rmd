@@ -1,0 +1,590 @@
+---
+title: "Stat_183_Proj_RF"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r,echo = FALSE, include=FALSE}
+#install.packages("read_xl")
+#install.packages("tidyverse")
+```
+
+```{r,echo = FALSE, include=FALSE}
+library(tidyverse)
+library(readxl)
+library(emmeans)
+library(boot) # for cv.glm()
+library(plotROC) # for ROC curve
+library(pROC) # for roc() fn
+library(corrr)
+#library(WVPlots)
+#library(ggthemes)
+#library(multcomp)
+library(ranger)
+#library(h2o)
+library(vip)
+
+library(gridExtra) # Load gridExtra
+library(boot) # for cv.glm()
+library(pROC) # for roc() fn
+library(randomForest) # random forest functions
+library(caret) # for confusion matrix
+library(scales) # for confusion matrix
+```
+```{r,echo = FALSE, include=FALSE}
+#install.packages("ranger")
+#install.packages("h20")
+#install.packages("vip")
+```
+
+
+
+```{r,echo = FALSE, include=FALSE}
+# read in xlsx data set
+df_gs <- read_excel("/Users/junhernandez/Documents/A\ -\ Current\ Quarter/Stat\ 183/Project/DM_data/Game\ Sessions.xlsx") 
+df_users <- read_excel("/Users/junhernandez/Documents/A\ -\ Current\ Quarter/Stat\ 183/Project/DM_data/Users.xlsx")
+#View(df)
+```
+
+```{r,echo = FALSE, include=FALSE}
+head(df_gs)
+summary(df_gs)
+str(df_gs)
+```
+
+```{r,echo = FALSE, include=FALSE}
+# Rename df_gs column names
+colnames(df_gs)
+df_gs <- df_gs %>%
+  rename(User_ScLoss_LowQuality = "Player Score Loss \r\n(Low Quality)", 
+         User_ScLoss_Tardiness = "Player Score Loss (Tardiness)", 
+         AI_ScLoss_LowQuality = "AI Score Loss \r\n(Low Quality)",
+         AI_ScLoss_Tardiness = "AI Score Loss \r\n(Tardiness)", 
+         User_ID = "User ID",
+         Game_Level = "Game Level",
+         Player_Score = "Player Score",
+         AI_Score = "AI Score",
+         User_Strategy_Index = "User Strategy Index",
+         User_Strategy_Description = "User Strategy Description",
+         Facial_Expression_ID = "Facial Expression ID",
+         Start_Time = "Start Time",
+         End_Time = "End Time")
+
+```
+
+```{r,echo = FALSE, include=FALSE}
+colnames(df_gs)
+```
+
+```{r,echo = FALSE, include=FALSE}
+length(unique(df_users$ID))
+#1143 unique users
+```
+
+```{r,echo = FALSE, include=FALSE}
+temp_gs <- df_gs
+
+# join df_users with gs_by_users
+gs_users <- temp_gs %>%
+  left_join(df_users, by = c("User_ID" = "ID"))  #join gets rid of NA rows, so no survey data. Only losing about 160 surveys
+gs_users
+
+length(unique(gs_users$User_ID)) # 994 users
+length(unique(gs_users$ID)) # 9269 game sessions
+```
+
+```{r,echo = FALSE, include=FALSE}
+# Add new binary column for beat_ai
+gs_users_fixed <- gs_users %>%
+  mutate(beat_ai = (Player_Score > AI_Score)) 
+# turn into 0/1 value
+gs_users_fixed$beat_ai <- as.integer(as.logical(gs_users_fixed$beat_ai))
+#output
+gs_users_fixed
+```
+
+```{r,echo = FALSE, include=FALSE}
+# select vars that would be useful for creating a log model
+gs_users_rf <- gs_users_fixed %>% 
+  select("User_ID", "Player_Score","beat_ai", "Game_Level", "User_ScLoss_LowQuality", "User_ScLoss_Tardiness",
+         "AI_Score", "AI_ScLoss_LowQuality", "AI_ScLoss_Tardiness","User_Strategy_Index", "Facial_Expression_ID",
+         "Happiness", "Sadness", "Excitement", "Boredom", "Anger", "Surprise", "Start_Time", 
+         "End_Time", "Gender", "Education", "Country", "Age")
+# output
+gs_users_rf
+length(unique(gs_users_rf$User_ID)) # 994 users
+```
+
+# 3.1 Question 3
+For question 3, we want to see if we can model the overall Player Score with a number of predictors. 
+
+## 3.2 Methodology - Random Forest Model
+Random forests are a modification of bagged decision trees that build a large collection of de-correlated trees, that has powerful predictive performance. Using random forest for regression, we can treat the "User Score" as a response variable and include similar predictors as the logistic regression model. Again, we use both the Game Sessions and Users data sets. The "ranger" package was used to build the random forest model, which has a strong out-of-the-box performance. We can then tune the parameters to further reduce the RMSE, which is an estimate of how well the model was able to predict the validation set outcomes, with the added benefit of being measured in the same units as the response variable "Player Score".
+
+
+```{r,echo = FALSE, include=FALSE}
+# clean data by filtering out bad values
+gs_users_rf <- gs_users_rf %>%
+  filter(User_ScLoss_LowQuality <= 1) %>%
+  filter(User_ScLoss_Tardiness <= 1) %>%
+  filter(Age > 0) %>%
+  filter(Player_Score <= 1) %>%
+  filter(AI_Score <= 1) %>%
+  filter(!(Gender == "female"))
+# output
+summary(gs_users_rf)
+length(unique(gs_users_rf$User_ID)) # 994 users down to 790 users. Lost due to data cleaning
+```
+
+
+```{r,echo = FALSE, include=FALSE}
+# filter out times, they might be useful but I have to turn into times
+gs_users_rf <- gs_users_rf %>%
+  select(-`Start_Time`, -`End_Time`)
+```
+
+
+```{r,echo = FALSE, include=FALSE}
+gs_users_rf <- gs_users_rf %>%
+  drop_na()  # drop 2 NA
+```
+
+
+```{r,echo = FALSE, include=FALSE}
+summary(gs_users_rf)
+length(unique(gs_users_rf$User_ID)) # 994 users down to 780 users. Lost due to data cleaning
+# check NA count for each column
+sapply(gs_users_rf, function(x) sum(is.na(x))) # No NAs
+```
+
+
+```{r,echo = FALSE, include=FALSE}
+# set vars as factor
+gs_users_rf$Gender <- as.factor(gs_users_rf$Gender)
+gs_users_rf$Education <- as.factor(gs_users_rf$Education)
+gs_users_rf$Country <- as.factor(gs_users_rf$Country)
+gs_users_rf$Game_Level <- as.factor(gs_users_rf$Game_Level) # doesn't work since LATER for summarizing and group by user, have to average
+gs_users_rf$User_Strategy_Index <- as.factor(gs_users_rf$User_Strategy_Index)
+gs_users_rf$Facial_Expression_ID <- as.factor(gs_users_rf$Facial_Expression_ID)
+
+# output
+summary(gs_users_rf)
+gs_users_rf
+str(gs_users_rf)
+```
+
+```{r,echo = FALSE, include=FALSE}
+# Check levels
+#levels(gs_users_log$Game_Level)
+levels(gs_users_rf$Gender)
+#head(gs_users_log$Gender)
+levels(gs_users_rf$Education) # relevel
+levels(gs_users_rf$Country)
+
+# check if ordered - NOTE: THIS IS ADVANCED, ORDINAL LOG REG? Introducing order categ. vars may change model statistically. LEAVE UNORDERED
+#is.ordered(gs_users_log$Game_Level)
+
+# Reorder education factor levels
+ord_edu <- c("High School", "Diploma", "Bachelor", "Master", "PhD", "Others")
+gs_users_rf$Education <- factor(gs_users_rf$Education, levels = ord_edu)
+#levels(gs_users_rf$Education)
+is.ordered(gs_users_rf$Education)
+
+
+
+# Relevel and set reference levels
+gs_users_rf$Game_Level <- relevel(factor(gs_users_rf$Game_Level),
+                                   "1")
+levels(gs_users_rf$Game_Level)
+# Gender
+gs_users_rf$Gender <- relevel(factor(gs_users_rf$Gender),
+                                   "Male")
+levels(gs_users_rf$Gender)
+# Education
+gs_users_rf$Education <- relevel(factor(gs_users_rf$Education),
+                                   "High School")
+levels(gs_users_rf$Education)
+# Country
+gs_users_rf$Country <- relevel(factor(gs_users_rf$Country),
+                                   "China")
+levels(gs_users_rf$Country)
+
+
+
+# might have to take out
+gs_users_rf$User_Strategy_Index <- relevel(factor(gs_users_rf$User_Strategy_Index),
+                                   "100001")
+levels(gs_users_rf$User_Strategy_Index)
+# Facial_Expression_ID
+gs_users_rf$Facial_Expression_ID <- relevel(factor(gs_users_rf$Facial_Expression_ID),
+                                    "0")
+levels(gs_users_rf$Facial_Expression_ID)
+```
+
+```{r,echo = FALSE, include=FALSE}
+str(gs_users_rf)
+```
+
+## 3.3 Cleaning the data
+In order to use random forest, we must remove any columns with many NAs. We use a very similar cleaned data set compared to the logistic regression model, but can now include categorical variables with many levels, such as "Facial Expression ID" with 26 levels and "User Strategy Index" with 37 levels. We also turn any character data in factors.
+
+We overall have 780 unique users, and a total of 8,241 rows of data. We can use most of the data since random forest is non-parametric. The variables in the model were as follows:
+
+"Player_Score", "beat_ai", "Game_Level", "User_ScLoss_LowQuality", "User_ScLoss_Tardiness",
+         "AI_Score","AI_ScLoss_LowQuality", "AI_ScLoss_Tardiness","User_Strategy_Index",
+         "Facial_Expression_ID","Happiness", "Sadness", "Excitement", "Boredom", "Anger", "Surprise", 
+         "Gender", "Education", "Country", "Age"
+
+
+```{r,echo = FALSE, include=TRUE}
+# check dist of count, or # of games played
+gs_users_rf %>% ggplot(mapping = aes(x = Player_Score)) +
+  geom_histogram(bins = 60, fill = "blue", color = "lightblue") + 
+  labs(x = "Player Score", y = "Count", title = "Distribution of Player Score")
+```
+
+```{r,echo = FALSE, include=FALSE}
+temp_rf <- gs_users_rf %>%
+  select(-User_ID)
+temp_rf
+str(temp_rf) 
+```
+
+
+## 3.4 Initial Random Forest Model 
+First we split the data into training and validation sets to check for model performance, and run the model based on our cleaned data set. 
+
+```{r,echo = FALSE, include=FALSE}
+set.seed(183)
+# Split into Train and Validation sets
+# Training Set : Validation Set = 70 : 30 (random)
+trainer_rf <- sample(nrow(temp_rf), 0.7*nrow(temp_rf), replace = FALSE)
+Train_rf <- temp_rf[trainer_rf,]
+Valid_rf <- temp_rf[-trainer_rf,]
+Train_rf
+Valid_rf
+```
+
+```{r,echo = FALSE, include=FALSE}
+# number of features
+n_features <- length(setdiff(names(Train_rf), "Player_Score"))
+n_features
+
+score_rf1 <- ranger(
+  Player_Score ~ .,
+  data = Train_rf,
+  mtry = floor(n_features / 3),
+  respect.unordered.factors = "order",
+  seed = 183
+)
+
+(default_rmse <- sqrt(score_rf1$prediction.error)) #  0.03551626
+floor(n_features / 3)
+
+```
+
+**Initial Model Performance**
+
+An important parameter for random forest is the mtry parameter, which is split-variable randomization where each time a split is to be performed, the search for the split variable is limited to a random subset of mtry of the original number of features. Since we are doing regression based modeling, a good rule of thumb is to use mtry = the number of features divided by 3, which is mtry = 6. Based on the out-of-box-performance, we get an initial RMSE =  0.03551626.
+
+
+```{r,echo = FALSE, include=FALSE}
+# number of features
+n_features <- ncol(Train_rf) - 1
+
+# tuning grid
+tuning_grid <- expand.grid(
+  trees = seq(10, 1000, by = 20),
+  rmse = NA
+)
+
+for(i in seq_len(nrow(tuning_grid))) {
+  
+  # fit a random forest
+  fit <- ranger(
+    formula = Player_Score ~ .,
+    data = Train_rf,
+    num.trees = tuning_grid$trees[i],
+    mtry = floor(n_features / 3),
+    respect.unordered.factors = 'order',
+    verbose = FALSE,
+    seed = 183
+  )
+  
+  # Extract OOB RMSE
+  tuning_grid$rmse[i] <- sqrt(fit$prediction.error)
+}
+
+```
+
+## 3.5 Tuning the model parameters
+Now that we have our initial model, we can tune a number of important parameters besides mtry, such as:
+
+1. The number of trees in the forest
+
+2. The complexity of each tree
+
+3. The sampling scheme used
+
+
+```{r,echo = FALSE, include=TRUE}
+ggplot(tuning_grid, aes(trees, rmse)) +
+  geom_line(size = 1) +
+  ylab("OOB Error (RMSE)") +
+  xlab("Number of Trees") +
+  labs(title = "Number of Trees for Model")
+
+```
+
+We can see from the graph that an ideal number of trees is around 375. More trees may reduce the RMSE, however this comes at a cost of computational complexity. 
+
+
+```{r,echo = FALSE, include=FALSE}
+# tuning_grid2 <- expand.grid(
+#   trees = seq(10, 1000, by = 20),
+#   mtry  = floor(c(seq(2, 80, length.out = 5), 26)),
+#   rmse  = NA
+# )
+# 
+# for(i in seq_len(nrow(tuning_grid2))) {
+#   fit <- ranger(
+#   formula    = Player_Score ~ ., 
+#   data       = Train_rf, 
+#   num.trees  = tuning_grid2$trees[i],
+#   mtry       = tuning_grid2$mtry[i],
+#   respect.unordered.factors = 'order',
+#   verbose    = FALSE,
+#   seed       = 183
+# )
+#   
+#   tuning_grid2$rmse[i] <- sqrt(fit$prediction.error)
+#   
+# }
+# 
+# labels <- tuning_grid2 %>%
+#   filter(trees == 990) %>%
+#   mutate(mtry = as.factor(mtry))
+# 
+# tuning_grid2 %>%
+#   mutate(mtry = as.factor(mtry)) %>%
+#   ggplot(aes(trees, rmse, color = mtry)) +
+#   geom_line(size = 1, show.legend = FALSE) +
+#   ggrepel::geom_text_repel(data = labels, aes(trees, rmse, label = mtry), nudge_x = 50, show.legend = FALSE) +
+#   ylab("OOB Error (RMSE)") +
+#   xlab("Number of trees")
+
+```
+
+```{r,echo = FALSE, include=FALSE}
+# labels <- tuning_grid %>%
+#   filter(trees == 990) %>%
+#   mutate(mtry = as.factor(mtry))
+# 
+# tuning_grid %>%
+#   mutate(mtry = as.factor(mtry)) %>%
+#   ggplot(aes(trees, rmse, color = mtry)) +
+#   geom_line(size = 1, show.legend = FALSE) +
+#   ggrepel::geom_text_repel(data = labels, aes(trees, rmse, label = mtry), nudge_x = 50, show.legend = FALSE) +
+#   ylab("OOB Error (RMSE)") +
+#   xlab("Number of trees")
+```
+
+
+```{r,echo = FALSE, include=TRUE}
+tuning_grid <- expand.grid(
+  min.node.size = 1:20,
+  run_time  = NA,
+  rmse = NA
+)
+
+for(i in seq_len(nrow(tuning_grid))) {
+  fit_time <- system.time({
+    fit <- ranger(
+    formula    = Player_Score ~ ., 
+    data       = Train_rf, 
+    num.trees  = 300,
+    mtry       = 6,
+    min.node.size = tuning_grid$min.node.size[i],
+    respect.unordered.factors = 'order',
+    verbose    = FALSE,
+    seed       = 183
+  )
+})
+  
+  tuning_grid$run_time[i] <- fit_time[[3]]
+  tuning_grid$rmse[i] <- sqrt(fit$prediction.error)
+  
+}
+
+min_node_size <- tuning_grid %>% 
+  mutate(
+    error_first = first(rmse),
+    runtime_first = first(run_time),
+    `Error Growth` = (rmse / error_first) - 1,
+    `Run Time Reduction` = (run_time / runtime_first) - 1
+    )
+
+p1 <-  ggplot(min_node_size, aes(min.node.size, `Error Growth`)) +
+  geom_smooth(size = 1, se = FALSE, color = "black") +
+  scale_y_continuous("Percent growth in error estimate", labels = scales::percent) +
+  xlab("Minimum node size") +
+  ggtitle("A) Impact to error estimate")
+
+p2 <-  ggplot(min_node_size, aes(min.node.size, `Run Time Reduction`)) +
+  geom_smooth(size = 1, se = FALSE, color = "black") +
+  scale_y_continuous("Reduction in run time", labels = scales::percent) +
+  xlab("Minimum node size") +
+  ggtitle("B) Impact to run time")
+
+gridExtra::grid.arrange(p1, p2, nrow = 1)
+```
+
+The next parameter is tree complexity, and we can see the relationship with the minimum node size and percent growth in error estimate and reduction in computational run time. 
+
+```{r,echo = FALSE, include=TRUE}
+tuning_grid <- expand.grid(
+  sample.fraction = seq(.05, .95, by = .05),
+  replace  = c(TRUE, FALSE),
+  rmse = NA
+)
+
+for(i in seq_len(nrow(tuning_grid))) {
+  fit <- ranger(
+    formula    = Player_Score ~ ., 
+    data       = Train_rf, 
+    num.trees  = 300,
+    mtry       = 6,
+    sample.fraction = tuning_grid$sample.fraction[i],
+    replace = tuning_grid$replace[i],
+    respect.unordered.factors = 'order',
+    verbose    = FALSE,
+    seed       = 183
+  )
+
+  tuning_grid$rmse[i] <- sqrt(fit$prediction.error)
+  
+}
+
+tuning_grid %>%
+  ggplot(aes(sample.fraction, rmse, color = replace)) +
+  geom_line(size = 1) +
+  scale_x_continuous("Sample Fraction", breaks = seq(.1, .9, by = .1), labels = scales::percent) +
+  ylab("OOB Error (RMSE)") +
+  scale_color_discrete("Sample with Replacement") +
+  theme(legend.position = c(0.8, 0.85),
+        legend.key = element_blank(),
+        legend.background = element_blank())
+```
+
+Moving on to the parameter of sampling scheme, we see that we can actually lower the RMSE by sampling without replacement, at around 80% sample size. This parameter determines how many observations are drawn for the training of each tree. Decreasing the sample size leads to more diverse trees and lowers the between-tree correlation, which may have a positive effect on the prediction accuracy. 
+
+
+## 3.6 Hyper Grid Tuning Strategy and Final Model
+We conduct a full Cartesian grid search to assess every combination of hyperparameters of interest. 
+
+```{r,echo = FALSE, include=TRUE}
+# create hyperparameter grid
+hyper_grid <- expand.grid(
+  mtry = floor(n_features * c(.05, .15, .25, .333, .4)),
+  min.node.size = c(1, 3, 5, 10), 
+  replace = c(TRUE, FALSE),                               
+  sample.fraction = c(.5, .63, .8),                       
+  rmse = NA                                               
+)
+
+# execute full cartesian grid search
+for(i in seq_len(nrow(hyper_grid))) {
+  # fit model for ith hyperparameter combination
+  fit <- ranger(
+    formula         = Player_Score ~ ., 
+    data            = Train_rf, 
+    num.trees       = n_features * 10,
+    mtry            = hyper_grid$mtry[i],
+    min.node.size   = hyper_grid$min.node.size[i],
+    replace         = hyper_grid$replace[i],
+    sample.fraction = hyper_grid$sample.fraction[i],
+    verbose         = FALSE,
+    seed            = 183,
+    respect.unordered.factors = 'order',
+  )
+  # export OOB error 
+  hyper_grid$rmse[i] <- sqrt(fit$prediction.error)
+}
+
+# assess top 10 models
+hyper_grid %>%
+  arrange(rmse) %>%
+  mutate(perc_gain = (default_rmse - rmse) / default_rmse * 100) %>%
+  head(10)
+```
+
+```{r,echo = FALSE, include=TRUE}
+print(0.03453105 / mean(Valid_rf$Player_Score))
+```
+
+
+We see that the top model has hyperparameters mtry = 7, min.node.size = 3, sample_with_replace = false, sample.fraction = 0.80, all with an RMSE = 0.03453105, which has a 2.77% performance gain over the out-of-box model. Overall, the final random forest model RMSE is 4.5984% as large as the mean of the validation set "Player Score" response variable. 
+
+
+
+```{r,echo = FALSE, include=FALSE}
+# re-run model with impurity-based variable importance
+rf_impurity <- ranger(
+  formula = Player_Score ~ ., 
+  data = Train_rf, 
+  num.trees = 375,
+  mtry = 7,
+  min.node.size = 3,
+  sample.fraction = .80,
+  replace = FALSE,
+  importance = "impurity",
+  respect.unordered.factors = "order",
+  verbose = FALSE,
+  seed  = 183
+)
+
+# re-run model with permutation-based variable importance
+rf_permutation <- ranger(
+  formula = Player_Score ~ ., 
+  data = Train_rf, 
+  num.trees = 375,
+  mtry = 7,
+  min.node.size = 3,
+  sample.fraction = .80,
+  replace = FALSE,
+  importance = "permutation",
+  respect.unordered.factors = "order",
+  verbose = FALSE,
+  seed  = 183
+)
+```
+
+## 3.7 Feature Importance
+
+```{r,echo = FALSE, include=TRUE}
+p1 <- vip::vip(rf_impurity, num_features = 25, bar = FALSE)
+p2 <- vip::vip(rf_permutation, num_features = 25, bar = FALSE)
+
+gridExtra::grid.arrange(p1, p2, nrow = 1)
+```
+
+We can see from the graph the impurity-based measure of feature importance, where we base feature importance on the average total reduction of the loss function for a given feature across all trees, and the permutation-based importance measure, where for each tree, the out-of-box sample is passed down the tree and the prediction accuracy is recorded. These are the most important features for predicting "User Score". 
+
+# 4 Conclusion
+In this study, we tried to find out the answers to these questions: 
+
+*1. How do emotions play a role in a users "Player Score", in particular how Happiness levels and Sadness levels compare?* 
+
+These results are unfortunately inconclusive since the data is non-normal and has unequal variances. Due to the unequal variances, we cannot use non-parametric methods.
+
+*2. Can we model whether or not a player was able to beat the AI score?* 
+
+While the models did not perform as well on the validation set, we found that the most significant predictors for whether or not the player beat the AI, on average, were average Game Level difficulty, the average User Score Loss due to Low Quality performance, the averge User Score Loss due to Tardiness in the game, the average Happiness level, and the number of games played. There were other interesting descriptive statistics, such as the distribution of beating the AI on average.
+
+*3. Can we model the overall User Score with a number of predictors? *
+
+Our final model had a RMSE = 0.03453105 and the is about 4.60% as large as the mean of the validation set "Player Score" response variable. We can also see from the analysis the most important predictors in determing User Score. Based on this, we can variable screen and eliminate variables that are not of interest and identify important variables for future modeling, without affecting the quality of the final model.
+
+
+
